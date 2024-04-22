@@ -38,6 +38,47 @@
 		+ create a new bucket if the existing bucket is full (has the
 	    maximum number of items
 
+	Sample document: 		
+  {
+    "_id": {
+      "$oid": "66268d5ea752a41b67c62106"
+    },
+    "colNum": 1,
+    "numItems": 4,
+    "items": [
+      {
+        "itemId": {
+          "$oid": "66268d5e00e0f763e77a61ec"
+        },
+        "itemNum": 0,
+        "itemName": "item 0"
+      },
+      {
+        "itemId": {
+          "$oid": "66268d5e00e0f763e77a61e9"
+        },
+        "itemNum": 1,
+        "itemName": "item 1"
+      },
+      {
+        "itemId": {
+          "$oid": "66268d5e00e0f763e77a61ea"
+        },
+        "itemNum": 2,
+        "itemName": "item 2"
+      },
+      {
+        "itemId": {
+          "$oid": "66268d5e00e0f763e77a61ed"
+        },
+        "itemNum": 3,
+        "itemName": "item 3"
+      }
+    ],
+    "colId": 123,
+    "colName": "collection one"
+  }		
+
 	Designed to run in mongosh.
 
 	This code supports the following public operations:
