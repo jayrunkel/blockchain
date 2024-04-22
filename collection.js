@@ -1,26 +1,51 @@
-
+/*
+items : {
+          '$cond': {
+            'if': '$$existingItem', 
+            'then': {
+              '$map': {
+                'input': {$ifNull : ['$items', []]}, 
+                'in': {
+                  '$cond': {
+                    'if': {
+                      '$eq': ['$$existingItem.itemId', '$$this.itemId']
+                    }, 
+                    'then': {
+                      '$mergeObjects': ['$$this', itemDoc]
+                    }, 
+                    'else': '$$this'
+                    }
+                  }
+                }
+              }, 
+              'else': {
+                '$concatArrays': [
+                  '$items', [itemDoc]
+                ]
+              }
+            }
+          }
+*/
 
 let DB_NAME = "blockchain";
 let COL_NAME = "collection";
+let ITEMS_PER_BUCKET = 4;
+//Let MAX_NUM_RETRIES = 5;
 
 use(DB_NAME);
-
 let COL = db.getCollection(COL_NAME);
 
+// Unique indexes may not be required in production, but they provide error checking during development
 function createIndexes() {
-	COL.createIndex({colNum: 1, itemId: 1}, {unique: true});
+	COL.createIndex({colNum: 1, "items.itemId": 1}, {unique: true});
 }
 
 
 function insertData() {
 
-	let colDoc = {
-		_id: 123, // collection id
-		colNum: 1,
-		colName: "collection one",
-		numItems: 0,
-		items: []
-	};
+	let colId = 123;
+	let colNum = 1;
+	let colName = "collection one";
 
 	let itemOneId = ObjectId();
 	let itemTwoId = ObjectId();
@@ -68,8 +93,7 @@ function insertData() {
 		},
 	];
 
-	COL.insertOne(colDoc);
-	items.forEach(item => insertItem(item));
+	items.forEach(item => insertItem(colId, colNum, colName, item));
 }
 
 function createCollection() {
@@ -78,8 +102,10 @@ function createCollection() {
 }
 
 
-function insertItem(itemDoc) {
-	let existingItemFilter = {
+function insertItem(colId, colNum, colName, itemDoc) {
+
+	let existingItemFilter = 
+			{
 		$arrayElemAt : [
 			{
 				'$filter': {
@@ -92,33 +118,20 @@ function insertItem(itemDoc) {
 			0
 		]
   };
-	let updateAggregation = [
-  {
-    '$set': {
-			numItems: {
+
+	let itemCalcExpr =
+			{
 				$let : {
 					vars : {
-						existingItem: existingItemFilter
+						existingItem : existingItemFilter
 					},
-					in: {
-					 '$add': [
-						'$numItems',
-						{$cond : {if : "$$existingItem", then: 0, else: 1}}
-					 ]
-				  }
-				}
-			},
-			'items': {
-      '$let': {
-        'vars': {
-          'existingItem': existingItemFilter
-        }, 
-        'in': {
+					in: 
+				{
           '$cond': {
             'if': '$$existingItem', 
             'then': {
               '$map': {
-                'input': '$items', 
+                'input': {$ifNull : ['$items', []]}, 
                 'in': {
                   '$cond': {
                     'if': {
@@ -134,28 +147,101 @@ function insertItem(itemDoc) {
               }, 
               'else': {
                 '$concatArrays': [
-                  '$items', [itemDoc]
+                  {$ifNull: ['$items', []]}, [itemDoc]
                 ]
               }
+            }
+				}
+				}
+			};
+	let updateAggregation = [
+  {
+    '$set': {
+			numItems: {
+					 $add: [
+						 {$ifNull : ['$numItems', 0]},
+						 {$cond : {if : existingItemFilter, then: 0, else: 1}}
+					 ]
+			},
+			items : itemCalcExpr, //{$concatArrays : [{$ifNull : ["$items", []]}, [itemDoc]]},
+			colId : {$ifNull : ["$colId", colId]},
+			colNum : {$ifNull : ["$colNum", colNum]},
+			colName : {$ifNull : ["$colName", colName]},
+			}
+
+	}
+		];
+
+
+//	printjson(updateAggregation);
+	let updateResult = COL.updateOne({$and : [{colNum: 1},
+																		{"$or" : [{"items.itemId": itemDoc.itemId},
+																						{numItems: {$lt:  ITEMS_PER_BUCKET}}]}]},
+																	 updateAggregation,
+																	 {upsert: true}
+																	);
+}
+
+function getItem(colNum, itemNum) {
+	let result = COL.aggregate([
+  {
+    '$match': {
+      'colNum': colNum, 
+      'items.itemNum': itemNum
+    }
+  }, {
+    '$replaceRoot': {
+      'newRoot': {
+        '$first': {
+          '$filter': {
+            'input': '$items', 
+            'cond': {
+              '$eq': [
+                '$$this.itemNum', itemNum
+              ]
             }
           }
         }
       }
     }
-	}
-];
+  }
+	]).toArray();
 
+	return result;
+}
 
-	printjson(updateAggregation);
-	COL.updateOne({colNum: 1},
-								updateAggregation
-							 );
+function getCount(colNum) {
+	let count = COL.aggregate([
+  {
+    '$match': {
+      'colNum': colNum
+    }
+  }, {
+    '$group': {
+      '_id': null, 
+      'total': {
+        '$sum': '$numItems'
+      }
+    }
+  }, {
+    '$project': {
+      '_id': 0
+    }
+  }
+	]).toArray();
+
+	return count;
+	
 }
 
 function test() {
 	createCollection();
 	
 	insertData();
+	printjson(getItem(1, 4));
+	printjson(getCount(1));
 }
 
 test();
+
+
