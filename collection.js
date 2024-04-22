@@ -40,6 +40,14 @@
 
 	Designed to run in mongosh.
 
+	This code supports the following public operations:
+	- createCollection - drops the mongoDB collection and adds required
+                       indexes. 
+	- insertItem - inserts an item into a collection. Creates
+                 collection/bucket documents as necessary.
+		
+	- getItem - returns the requested item
+	- getCount - returns the number of items in a collection							 
 
 */
 
@@ -58,6 +66,7 @@ function createIndexes() {
 }
 
 
+// Test function
 function insertData() {
 
 	let colId = 123;
@@ -121,130 +130,164 @@ function createCollection() {
 
 function insertItem(colId, colNum, colName, itemDoc) {
 
+	// has the value of non-null if their exists an item in the items
+	// array that has the same itemId as itemDoc
 	let existingItemFilter = 
 			{
-		$arrayElemAt : [
-			{
-				'$filter': {
-					'input': '$items', 
-					'cond': {
-						'$eq': ['$$this.itemId', itemDoc.itemId]
-					}
-				}
-			},
-			0
-		]
-  };
-
-	let itemCalcExpr =
-			{
-				$let : {
-					vars : {
-						existingItem : existingItemFilter
+				$arrayElemAt : [
+					{
+						'$filter': {
+							'input': '$items', 
+							'cond': {
+								'$eq': ['$$this.itemId', itemDoc.itemId]
+							}
+						}
 					},
-					in: 
-				{
-          '$cond': {
-            'if': '$$existingItem', 
-            'then': {
-              '$map': {
-                'input': {$ifNull : ['$items', []]}, 
-                'in': {
-                  '$cond': {
-                    'if': {
-                      '$eq': ['$$existingItem.itemId', '$$this.itemId']
-                    }, 
-                    'then': {
-                      '$mergeObjects': ['$$this', itemDoc]
-                    }, 
-                    'else': '$$this'
-                    }
-                  }
-                }
-              }, 
-              'else': {
-                '$concatArrays': [
-                  {$ifNull: ['$items', []]}, [itemDoc]
-                ]
-              }
-            }
-				}
-				}
+					0
+				]
 			};
-	let updateAggregation = [
-  {
-    '$set': {
-			numItems: {
+
+	// Calculates the new value of the items array.
+	// - If the item is already in the array new itemDoc and the
+  //   existing item are merged
+  // - If the item isn't in the array, itemDoc is appended to the end
+  //   of items
+	//
+	// The logic here is designed to handle situations when a new
+  // collection document needs to be created either because one
+  // doesn't exist or a new one has to be created because the previous
+  // bucket is full. The implication of this is that the code below
+  // must do the right thing when the items array ("$items") has the
+  // value of null
+	 let itemCalcExpr =
+			 {
+				 $let : {
+					 vars : {
+						 existingItem : existingItemFilter
+					 },
+						 in: 
+					 {
+						 '$cond': {
+							 'if': '$$existingItem', 
+							 'then': {
+								 '$map': {
+									 'input': {$ifNull : ['$items', []]}, 
+									 'in': {
+										 '$cond': {
+											 'if': {
+												 '$eq': ['$$existingItem.itemId', '$$this.itemId']
+											 }, 
+											 'then': {
+												 '$mergeObjects': ['$$this', itemDoc]
+											 }, 
+											 'else': '$$this'
+										 }
+									 }
+								 }
+							 }, 
+							 'else': {
+								 '$concatArrays': [
+									 {$ifNull: ['$items', []]}, [itemDoc]
+								 ]
+							 }
+						 }
+					 }
+				 }
+			 };
+
+	 let updateAggregation = [
+		 {
+			 '$set': {
+				 numItems: {
 					 $add: [
 						 {$ifNull : ['$numItems', 0]},
 						 {$cond : {if : existingItemFilter, then: 0, else: 1}}
 					 ]
-			},
-			items : itemCalcExpr, //{$concatArrays : [{$ifNull : ["$items", []]}, [itemDoc]]},
-			colId : {$ifNull : ["$colId", colId]},
-			colNum : {$ifNull : ["$colNum", colNum]},
-			colName : {$ifNull : ["$colName", colName]},
-			}
+				 },
+				 items : itemCalcExpr, 
+				 colId : {$ifNull : ["$colId", colId]},
+				 colNum : {$ifNull : ["$colNum", colNum]},
+				 colName : {$ifNull : ["$colName", colName]},
+			 }
 
-	}
-		];
+		 }
+	 ];
 
+	// There are three possible scenario for updates:
+	// 1. A collection document doesn't exist
+	// 2. A collection document exists and there is space in the items
+	//    array
+	// 3. A collection document exists and there is not space in the
+	//    items array
+	
+	 let updateResult = COL.updateOne({$and : [{colNum: 1},
+																						 {
+																							 "$or" : [
+																								 {"items.itemId": itemDoc.itemId},
+																								 {numItems: {$lt:
+																														 ITEMS_PER_BUCKET}}
+																							 ]
+																						 }
+																						]},
+																		updateAggregation,
+																		{upsert: true}
+																	 );
+ }
 
-//	printjson(updateAggregation);
-	let updateResult = COL.updateOne({$and : [{colNum: 1},
-																		{"$or" : [{"items.itemId": itemDoc.itemId},
-																						{numItems: {$lt:  ITEMS_PER_BUCKET}}]}]},
-																	 updateAggregation,
-																	 {upsert: true}
-																	);
-}
+// Returns the specified item given the collection and item number.
+// The $match stage selects the bucket that contains the item. The
+// $replaceRoot operation makes the selected item the root of the
+// document to be returned. The item is found using $filter. (Don't
+// use $unwind, it is less efficient.)
 
-function getItem(colNum, itemNum) {
-	let result = COL.aggregate([
-  {
-    '$match': {
-      'colNum': colNum, 
-      'items.itemNum': itemNum
-    }
-  }, {
-    '$replaceRoot': {
-      'newRoot': {
-        '$first': {
-          '$filter': {
-            'input': '$items', 
-            'cond': {
-              '$eq': [
-                '$$this.itemNum', itemNum
-              ]
-            }
-          }
-        }
-      }
-    }
-  }
-	]).toArray();
+ function getItem(colNum, itemNum) {
+	 let result = COL.aggregate([
+		 {
+			 '$match': {
+				 'colNum': colNum, 
+				 'items.itemNum': itemNum
+			 }
+		 }, {
+			 '$replaceRoot': {
+				 'newRoot': {
+					 '$first': {
+						 '$filter': {
+							 'input': '$items', 
+							 'cond': {
+								 '$eq': [
+									 '$$this.itemNum', itemNum
+								 ]
+							 }
+						 }
+					 }
+				 }
+			 }
+		 }
+	 ]).toArray();
 
-	return result;
-}
+	 return result;
+ }
 
+// Counts the number of items, but suming up the number of items
+// across the buckets for a collection.
 function getCount(colNum) {
 	let count = COL.aggregate([
-  {
-    '$match': {
-      'colNum': colNum
-    }
-  }, {
-    '$group': {
-      '_id': null, 
-      'total': {
-        '$sum': '$numItems'
-      }
-    }
-  }, {
-    '$project': {
-      '_id': 0
-    }
-  }
+		{
+			'$match': {
+				'colNum': colNum
+			}
+		}, {
+			'$group': {
+				'_id': null, 
+				'total': {
+					'$sum': '$numItems'
+				}
+			}
+		}, {
+			'$project': {
+				'_id': 0
+			}
+		}
 	]).toArray();
 
 	return count;
