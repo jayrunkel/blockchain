@@ -51,7 +51,7 @@
           "$oid": "66268d5e00e0f763e77a61ec"
         },
         "itemNum": 0,
-        "itemName": "item 0"
+        "itemName": "item 0",
       },
       {
         "itemId": {
